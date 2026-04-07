@@ -89,11 +89,6 @@ const Claim = union(enum){
 	}
 };
 
-const Arg = union(enum){
-	state: State,
-	param: Param
-};
-
 const Definition = struct {
 	body: Buffer(Claim),
 	claim: Claim,
@@ -494,6 +489,8 @@ const OPEN = '(';
 const CLOSE = ')';
 const IN = ':';
 const NOT = '~';
+const SEP = ',';
+const END = '.';
 const STATE = 0;
 const PARAM = 1;
 const IDEN = 2;
@@ -510,7 +507,7 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []const u8) Buffer(Token) {
 		const c = text[i];
 		switch(c){
 			' ', '\n', '\t', '\r' => {},
-			EQ, OPEN, CLOSE, IN, NOT => {
+			EQ, OPEN, CLOSE, IN, NOT, SEP, END => {
 				tokens.append(Token{
 					.tag = c,
 					.text = text[i..i+1]
@@ -558,6 +555,199 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []const u8) Buffer(Token) {
 	return tokens;
 }
 
+const ParseError = error{
+	ExpectedIdentifier,
+	ExpectedImplication,
+	ExpectedEquals,
+	ExpectedClaim,
+	UnknownDefinitionName,
+	ExpectedArg,
+	UnexpectedEOF
+};
+
+pub fn parse(mem: *const std.mem.Allocator, tokens: []Token) ParseError!Set(Definition) {
+	var names = Map(Name).init(mem.*);
+	names.put("alpha", 0) catch unreachable;
+	names.put("beta", 0) catch unreachable;
+	names.put("gamma", 0) catch unreachable;
+	names.put("phi", 0) catch unreachable;
+	names.put("iota", 0) catch unreachable;
+	names.put("kappa", 0) catch unreachable;
+	names.put("pi", 0) catch unreachable;
+	names.put("rho", 0) catch unreachable;
+	names.put("sigma", 0) catch unreachable;
+	var defs = Set(Definition).init(mem);
+	var i: u64 = 0;
+	while (i < tokens.len){
+		const def = try parse_definition(mem, tokens, &i, names);
+		defs.put(def);
+	}
+	return defs;
+}
+
+pub fn parse_definition(mem: *const std.mem.Allocator, tokens: []Token, i: *u64, names: Map(Name)) ParseError!Definition {
+	if (tokens[i.*].tag != IDEN){
+		return ParseError.ExpectedIdentifier;
+	}
+	if (names.get(tokens[i.*].text)) |name| {
+		i.* += 1;
+		var left: ?Claim = null;
+		var right: ?Claim = null;
+		if (tokens[i.*].tag == STATE){
+			left = Claim{
+				.state = tokens[i.*].text[0]
+			};
+		}
+		else if (tokens[i.*].tag == PARAM){
+			left = Claim{
+				.param = tokens[i.*].text[0]
+			};
+		}
+		else{
+			return ParseError.ExpectedArg;
+		}
+		i.* += 1;
+		if (tokens[i.*].tag == STATE){
+			right = Claim{
+				.state = tokens[i.*].text[0]
+			};
+		}
+		else if (tokens[i.*].tag == PARAM){
+			right = Claim{
+				.param = tokens[i.*].text[0]
+			};
+		}
+		else{
+			return ParseError.ExpectedArg;
+		}
+		i.* += 1;
+		std.debug.assert(left != null);
+		std.debug.assert(right != null);
+		const claim = Claim{
+			.impl = .{
+				.left = cuttle(Claim, mem.*, left.?),
+				.right = cuttle(Claim, mem.*, right.?)
+			}
+		};
+		if (tokens[i.*].tag != EQ){
+			return ParseError.ExpectedEquals;
+		}
+		i.* += 1;
+		var body = Buffer(Claim).init(mem.*);
+		while (i.* < tokens.len){
+			const subclaim = try parse_claim(mem, tokens, i, names);
+			body.append(subclaim) catch  unreachable;
+			if (tokens[i.*].tag == END){
+				i.* += 1;
+				break;
+			}
+		}
+		return Definition.init(name, claim, body);
+	}
+	return ParseError.UnknownDefinitionName;
+}
+		
+pub fn cuttle(comptime T: type, allocator: std.mem.Allocator, value: T) *T {
+    const ptr = allocator.create(T) catch unreachable;
+    ptr.* = value;
+    return ptr;
+}
+		
+pub fn parse_claim(mem: *const std.mem.Allocator, tokens: []Token, i: *u64, names: Map(Name)) ParseError!Claim {
+	if (i.* == tokens.len){
+		return ParseError.UnexpectedEOF;
+	}
+	if (tokens[i.*].tag == NOT){
+		i.* += 1;
+		return Claim{
+			.not = cuttle(Claim, mem.*, try parse_claim(mem, tokens, i, names))
+		};
+	}
+	else if (tokens[i.*].tag == IDEN){
+		if (names.get(tokens[i.*].text)) |name| {
+			i.* += 1;
+			const impl = try parse_claim(mem, tokens, i, names);
+			if (impl != .impl){
+				return ParseError.ExpectedImplication;
+			}
+			return Claim {
+				.named = .{
+					.name = name,
+					.left = impl.impl.left,
+					.right = impl.impl.right
+				}
+			};
+		}
+		return ParseError.UnknownDefinitionName;
+	}
+	var left: ?Claim = null;
+	var right: ?Claim = null;
+	if (tokens[i.*].tag == STATE){
+		left = Claim{
+			.state = tokens[i.*].text[0]
+		};
+	}
+	else if (tokens[i.*].tag == PARAM){
+		left = Claim{
+			.param = tokens[i.*].text[0]
+		};
+	}
+	else if (tokens[i.*].tag == OPEN){
+		i.* += 1;
+		left = try parse_claim(mem, tokens, i, names);
+	}
+	else{
+		return ParseError.ExpectedClaim;
+	}
+	i.* += 1;
+	if (i.* == tokens.len){
+		return ParseError.UnexpectedEOF;
+	}
+	if (tokens[i.*].tag == STATE){
+		right = Claim{
+			.state = tokens[i.*].text[0]
+		};
+	}
+	else if (tokens[i.*].tag == PARAM){
+		right = Claim{
+			.param = tokens[i.*].text[0]
+		};
+	}
+	else if (tokens[i.*].tag == OPEN){
+		i.* += 1;
+		right = try parse_claim(mem, tokens, i, names);
+	}
+	else if (tokens[i.*].tag == SEP){
+		i.* += 1;
+		return left.?;
+	}
+	else if (tokens[i.*].tag == END){
+		return left.?;
+	}
+	else if (tokens[i.*].tag == CLOSE){
+		return left.?;
+	}
+	else if (tokens[i.*].tag == IN){
+		i.* += 1;
+		right = try parse_claim(mem, tokens, i, names);
+		return Claim{
+			.in = .{
+				.left = cuttle(Claim, mem.*, left.?),
+				.right = cuttle(Claim, mem.*, right.?)
+			}
+		};
+	}
+	i.* += 1;
+	std.debug.assert(left != null);
+	std.debug.assert(right != null);
+	return Claim{
+		.impl = .{
+			.left = cuttle(Claim, mem.*, left.?),
+			.right = cuttle(Claim, mem.*, right.?)
+		}
+	};
+}
+
 pub fn main() !void {
 	const heap = std.heap.page_allocator;
 	const main_buffer = heap.alloc(u8, 0x10000) catch unreachable;
@@ -566,5 +756,6 @@ pub fn main() !void {
 	var temp_mem_fixed = std.heap.FixedBufferAllocator.init(temp_buffer);
 	var main_mem = main_mem_fixed.allocator();
 	var temp_mem = temp_mem_fixed.allocator();
-	_ = tokenize(&main_mem, "gamm a b = a b");
+	const tokens = tokenize(&main_mem, "gamm a b = a b");
+	_ = parse(&main_mem, tokens.items) catch unreachable;
 }

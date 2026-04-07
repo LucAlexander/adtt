@@ -62,6 +62,7 @@ const Definition = struct {
 	name: Name,
 	
 	pub fn init(name: Name, claim: Claim, body: Buffer(Claim)) Definition {
+		std.debug.assert(claim == .impl);
 		return Definition{
 			.name = name,
 			.claim = claim,
@@ -88,6 +89,10 @@ const Definition = struct {
 			}
 		}
 		return false;
+	}
+
+	pub fn copy(self: *Definition, mem: *const std.mem.Allocator) Definition {
+		//TODO
 	}
 
 	pub fn eql(left: Definition, right: Definition) bool {
@@ -126,6 +131,7 @@ const Mind = struct {
 		for (self.proofs.items) |proof| {
 			local_scope.put(proof.claim);
 		}
+		local_scope.put(def.claim.impl.left);
 		var i: u64 = 0;
 		while (i < def.body.items.len){
 			const constraint = &def.body.items[i];
@@ -147,9 +153,12 @@ const Mind = struct {
 			},
 			.in => {
 				if (self.get_definition(proof.in.right)) |definition| {
-					var copy = definition.copy();
+					var copy = definition.copy(self.mem);
 					var newmap = std.AutoHashMap(Param, Claim).init(self.mem.*);
 					var newscope = Set(Claim).init(self.mem);
+					for (local_scope.data.items) |scope_item| {
+						newscope.put(scope_item);
+					}
 					if (self.apply_argmap(&newmap, copy.claim, proof.in.right) == false) {
 						return false;
 					}
@@ -164,7 +173,7 @@ const Mind = struct {
 				return !self.prove_target(def, argmap, proof.not, local_scope);
 			},
 			.state => {
-				return self.shows(def, argmap, proof.state, local_scope);
+				return self.shows(def, argmap, proof, local_scope);
 			},
 			.param => {
 				if (argmap.get(proof.param)) |claim| {
@@ -176,9 +185,12 @@ const Mind = struct {
 			.named => {
 				for (self.definitions.items) |definition| {
 					if (definition.name == self.named.name){
-						var copy = definition.copy();
+						var copy = definition.copy(self.mem);
 						var newmap = std.AutoHashMap(Param, Claim).init(self.mem.*);
 						var newscope = Set(Claim).init(self.mem);
+						for (local_scope.data.items) |scope_item| {
+							newscope.put(scope_item);
+						}
 						if (self.apply_argmap(&newmap, copy.claim, proof.in.right) == false){
 							return false;
 						}
@@ -195,8 +207,46 @@ const Mind = struct {
 		return false;
 	}
 
-	pub fn shows(self: *Mind, def: Definition. argmap: *std.AutoHashMap(Param, Claim), claim: *Claim, local_scope: *Buffer(Claim)) bool {
-		for ()
+	pub fn shows(self: *Mind, def: Definition. argmap: *std.AutoHashMap(Param, Claim), claim: *Claim, local_scope: *Set(Claim)) bool {
+		var target: ?Claim = null;
+		if (claim == .impl){
+			if (local_scope.contains(claim.impl.left) == false){
+				return false;
+			}
+			if (local_scope.contains(claim.impl.right)){
+				return true;
+			}
+			target = claim.impl.right;
+		}
+		else if (claim == .state){
+			target = claim;
+		}
+		else{
+			return false;
+		}
+		std.debug.assert(target != null);
+		var old_len:u64 = 0;
+		var len:u64 = local_scope.data.items.len;
+		while (len != old_len){
+			old_len = len;
+			for (local_scope.data.items) |rule| {
+				std.debug.assert(rule != .named);
+				if (rule == .impl){
+					if (local_scope.contains(rule.impl.left)){
+						if (Claim.eql(target, rule.impl.right)){
+							return true;
+						}
+						local_scope.put(rule.impl.right);
+						break;
+					}
+				}
+			}
+			len = local_scope.data.items.len;
+		}
+		if (local_scope.contains(target)){
+			return true;
+		}
+		return false;
 	}
 
 	pub fn apply_argmap(argmap: *std.AutoHashMap(Param, Claim), defclaim: Claim, claim: Claim) bool {

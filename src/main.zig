@@ -46,7 +46,7 @@ const Claim = union(enum){
 				return Claim{
 					.not = self.not.copy(mem)
 				};
-			}
+			},
 			.state, .param => {
 				return self.*;
 			},
@@ -92,7 +92,7 @@ const Claim = union(enum){
 const Arg = union(enum){
 	state: State,
 	param: Param
-}
+};
 
 const Definition = struct {
 	body: Buffer(Claim),
@@ -167,7 +167,7 @@ const Mind = struct {
 	pub fn init(mem: *const std.mem.Allocator) Mind {
 		return Mind{
 			.mem = mem,
-			.definitions = Set(Definition).init(mem)
+			.definitions = Set(Definition).init(mem),
 			.proofs = Set(Definition).init(mem)
 		};
 	}
@@ -185,7 +185,7 @@ const Mind = struct {
 			}
 			i += 1;
 		}
-		if (self.shows(def, argmap, def.claim, &local_scope) == false) {
+		if (Mind.shows(def, argmap, def.claim, &local_scope) == false) {
 			return false;
 		}
 	}
@@ -194,7 +194,7 @@ const Mind = struct {
 	pub fn prove_target(self: *Mind, def: Definition, argmap: *std.AutoHashMap(Param, Claim), proof: *Claim, local_scope: *Set(Claim)) bool {
 		switch (proof.*){
 			.impl => {
-				return self.shows(def, argmap, proof, local_scope);
+				return Mind.shows(def, argmap, proof, local_scope);
 			},
 			.in => {
 				if (self.get_definition(proof.in.right)) |definition| {
@@ -218,7 +218,7 @@ const Mind = struct {
 				return !self.prove_target(def, argmap, proof.not, local_scope);
 			},
 			.state => {
-				return self.shows(def, argmap, proof, local_scope);
+				return Mind.shows(def, argmap, proof, local_scope);
 			},
 			.param => {
 				if (argmap.get(proof.param)) |claim| {
@@ -252,7 +252,38 @@ const Mind = struct {
 		return false;
 	}
 
-	pub fn shows(self: *Mind, def: Definition. argmap: *std.AutoHashMap(Param, Claim), claim: *Claim, local_scope: *Set(Claim)) bool {
+	pub fn run_argmap(claim: *Claim, argmap: *std.AutoHashMap(Param, Claim)) bool {
+		switch (claim.*){
+			.impl => {
+				return run_argmap(claim.impl.left, argmap) and run_argmap(claim.impl.right, argmap);
+			},
+			.in => {
+				return run_argmap(claim.in.left, argmap) and run_argmap(claim.in.right, argmap);
+			},
+			.not => {
+				return run_argmap(claim.not);
+			},
+			.state => {
+				return true;
+			},
+			.param => {
+				if (argmap.get(claim.param)) |arg| {
+					claim.* = arg;
+					return true;
+				}
+				return false;
+			},
+			.named => {
+				return run_argmap(claim.named.left, argmap) and run_argmap(claim.named.right, argmap);
+			}
+		}
+		return false;
+	}
+
+	pub fn shows(argmap: *std.AutoHashMap(Param, Claim), claim: *Claim, local_scope: *Set(Claim)) bool {
+		if (run_argmap(claim, argmap) == false){
+			return false;
+		}
 		var target: ?Claim = null;
 		if (claim == .impl){
 			if (local_scope.contains(claim.impl.left) == false){
@@ -322,7 +353,7 @@ const Mind = struct {
 					return false;
 				}
 				return apply_argmap(argmap, defclaim.named.left, claim.named.left) and apply_argmap(argmap, defclaim.named.right, claim.named.right);
-			}
+			},
 			else => {
 				return false;
 			}
@@ -457,6 +488,76 @@ pub fn SetPrimitive(comptime T: type) type {
 	};
 }
 
+const TOKEN = u64;
+const EQ = '=';
+const OPEN = '(';
+const CLOSE = ')';
+const IN = ':';
+const NOT = '~';
+const STATE = 0;
+const PARAM = 1;
+const IDEN = 2;
+
+const Token = struct {
+	tag: TOKEN,
+	text: []const u8
+};
+
+pub fn tokenize(mem: *const std.mem.Allocator, text: []const u8) Buffer(Token) {
+	var i: u64 = 0;
+	var tokens = Buffer(Token).init(mem.*);
+	while (i < text.len) {
+		const c = text[i];
+		switch(c){
+			' ', '\n', '\t', '\r' => {},
+			EQ, OPEN, CLOSE, IN, NOT => {
+				tokens.append(Token{
+					.tag = c,
+					.text = text[i..i+1]
+				}) catch unreachable;
+			},
+			else => {
+				if (std.ascii.isLower(c)){
+					var token = Token{
+						.tag = PARAM,
+						.text = text[i..i+1]
+					};
+					i += 1;
+					if (i < text.len){
+						if (std.ascii.isLower(text[i])){
+							token.tag = IDEN;
+							const k = i;
+							while (i < text.len){
+								if (std.ascii.isLower(text[i]) == false){
+									break;
+								}
+								i += 1;
+							}
+							token.text = text[k..i];
+							tokens.append(token) catch unreachable;
+							if (i == text.len){
+								return tokens;
+							}
+							continue;
+						}
+					}
+					tokens.append(token) catch unreachable;
+					continue;
+				}
+				else if (std.ascii.isUpper(c)){
+					const token = Token{
+						.tag = STATE,
+						.text = text[i..i+1]
+					};
+					tokens.append(token) catch unreachable;
+				}
+			}
+		}
+		i += 1;
+	}
+	return tokens;
+}
+
 pub fn main() !void {
 	const heap = std.heap.page_allocator;
 	const main_buffer = heap.alloc(u8, 0x10000) catch unreachable;
@@ -465,5 +566,5 @@ pub fn main() !void {
 	var temp_mem_fixed = std.heap.FixedBufferAllocator.init(temp_buffer);
 	var main_mem = main_mem_fixed.allocator();
 	var temp_mem = temp_mem_fixed.allocator();
-
+	_ = tokenize(&main_mem, "gamm a b = a b");
 }

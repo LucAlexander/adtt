@@ -24,6 +24,44 @@ const Claim = union(enum){
 		name: Name
 	},
 
+	pub fn copy(self: *Claim, mem: *const std.mem.Allocator) Claim {
+		switch(self.*){
+			.impl => {
+				return Claim{
+					.impl = .{
+						.left = self.impl.left.copy(mem),
+						.right = self.impl.right.copy(mem),
+					}
+				};
+			},
+			.in => {
+				return Claim{
+					.in = .{
+						.left = self.in.left.copy(mem),
+						.right = self.in.right.copy(mem),
+					}
+				};
+			},
+			.not => {
+				return Claim{
+					.not = self.not.copy(mem)
+				};
+			}
+			.state, .param => {
+				return self.*;
+			},
+			.named => {
+				return Claim{
+					.named = .{
+						.name = self.named.name,
+						.left = self.named.left.copy(mem),
+						.right = self.named.right.copy(mem),
+					}
+				};
+			}
+		}
+	}
+
 	pub fn eql(left: Claim, right: Claim) bool {
 		if (std.meta.activeTag(left) == std.meta.activeTag(right)){
 			return false;
@@ -92,7 +130,14 @@ const Definition = struct {
 	}
 
 	pub fn copy(self: *Definition, mem: *const std.mem.Allocator) Definition {
-		//TODO
+		var def = self.*;
+		def.claim = self.claim.copy(mem);
+		var i: u64 = 0;
+		while (i < def.body.items.len){
+			def.body[i] = self.body[i].copy(mem);
+			i += 1;
+		}
+		return def;
 	}
 
 	pub fn eql(left: Definition, right: Definition) bool {
